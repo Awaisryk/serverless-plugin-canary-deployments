@@ -101,13 +101,19 @@
                   ]
                 },
                 {
-                  "Action": [
-                    "codedeploy:PutLifecycleEventHookExecutionStatus"
-                  ],
                   "Effect": "Allow",
+                  "Action": [
+                    "dynamodb:GetRecords",
+                    "dynamodb:GetShardIterator",
+                    "dynamodb:DescribeStream",
+                    "dynamodb:ListStreams"
+                  ],
                   "Resource": [
                     {
-                      "Fn::Sub": "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${CanarydeploymentstestdevDeploymentApplication}/${HelloLambdaFunctionDeploymentGroup}"
+                      "Fn::GetAtt": [
+                        "StreamsTestTable",
+                        "StreamArn"
+                      ]
                     }
                   ]
                 }
@@ -237,46 +243,205 @@
         "CodeSha256": "sZvdDgxnAbKe1yaQga0XJPD82+o5jFWz+J3lR+q9UHU="
       }
     },
-    "HelloLambdaEventsRuleSchedule1": {
-      "Type": "AWS::Events::Rule",
+    "ApiGatewayRestApi": {
+      "Type": "AWS::ApiGateway::RestApi",
       "Properties": {
-        "ScheduleExpression": "rate(1 minute)",
-        "State": "ENABLED",
-        "Name": "test-scheduled-event",
-        "Targets": [
-          {
-            "Arn": {
-              "Ref": "HelloLambdaFunctionAliasLive"
-            },
-            "Id": "testFunctionSchedule"
-          }
-        ]
+        "Name": "dev-canary-deployments-test",
+        "EndpointConfiguration": {
+          "Types": [
+            "EDGE"
+          ]
+        }
       }
     },
-    "HelloLambdaPermissionEventsRuleSchedule1": {
+    "ApiGatewayResourceHello": {
+      "Type": "AWS::ApiGateway::Resource",
+      "Properties": {
+        "ParentId": {
+          "Fn::GetAtt": [
+            "ApiGatewayRestApi",
+            "RootResourceId"
+          ]
+        },
+        "PathPart": "hello",
+        "RestApiId": {
+          "Ref": "ApiGatewayRestApi"
+        }
+      }
+    },
+    "ApiGatewayMethodHelloGet": {
+      "Type": "AWS::ApiGateway::Method",
+      "Properties": {
+        "HttpMethod": "GET",
+        "RequestParameters": {},
+        "ResourceId": {
+          "Ref": "ApiGatewayResourceHello"
+        },
+        "RestApiId": {
+          "Ref": "ApiGatewayRestApi"
+        },
+        "ApiKeyRequired": false,
+        "AuthorizationType": "NONE",
+        "Integration": {
+          "IntegrationHttpMethod": "POST",
+          "Type": "AWS_PROXY",
+          "Uri": {
+            "Fn::Join": [
+              "",
+              [
+                "arn:aws:apigateway:",
+                {
+                  "Ref": "AWS::Region"
+                },
+                ":lambda:path/2015-03-31/functions/",
+                {
+                  "Ref": "HelloLambdaFunctionAliasLive"
+                },
+                "/invocations"
+              ]
+            ]
+          }
+        },
+        "MethodResponses": []
+      }
+    },
+    "ApiGatewayDeployment12345": {
+      "Type": "AWS::ApiGateway::Deployment",
+      "Properties": {
+        "RestApiId": {
+          "Ref": "ApiGatewayRestApi"
+        },
+        "StageName": "dev"
+      },
+      "DependsOn": [
+        "ApiGatewayMethodHelloGet"
+      ]
+    },
+    "HelloLambdaPermissionApiGateway": {
       "Type": "AWS::Lambda::Permission",
       "Properties": {
         "FunctionName": {
           "Ref": "HelloLambdaFunctionAliasLive"
         },
         "Action": "lambda:InvokeFunction",
-        "Principal": {
+        "Principal": "apigateway.amazonaws.com",
+        "SourceArn": {
           "Fn::Join": [
             "",
             [
-              "events.",
+              "arn:aws:execute-api:",
               {
-                "Ref": "AWS::URLSuffix"
-              }
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              {
+                "Ref": "ApiGatewayRestApi"
+              },
+              "/*/*"
             ]
           ]
+        }
+      }
+    },
+    "SNSTopicSnsTopic": {
+      "Type": "AWS::SNS::Topic",
+      "Properties": {
+        "TopicName": "snsTopic",
+        "DisplayName": "",
+        "Subscription": [
+          {
+            "Endpoint": {
+              "Ref": "HelloLambdaFunctionAliasLive"
+            },
+            "Protocol": "lambda"
+          }
+        ]
+      }
+    },
+    "HelloLambdaPermissionSnsTopicSNS": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "HelloLambdaFunctionAliasLive"
         },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "sns.amazonaws.com",
         "SourceArn": {
-          "Fn::GetAtt": [
-            "HelloLambdaEventsRuleSchedule1",
-            "Arn"
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:sns:",
+              {
+                "Ref": "AWS::Region"
+              },
+              ":",
+              {
+                "Ref": "AWS::AccountId"
+              },
+              ":",
+              "snsTopic"
+            ]
           ]
         }
+      }
+    },
+    "S3BucketS3SampleBucket": {
+      "Type": "AWS::S3::Bucket",
+      "Properties": {
+        "BucketName": "s3SampleBucket",
+        "NotificationConfiguration": {
+          "LambdaConfigurations": [
+            {
+              "Event": "s3:ObjectCreated:*",
+              "Function": {
+                "Ref": "HelloLambdaFunctionAliasLive"
+              }
+            }
+          ]
+        }
+      },
+      "DependsOn": [
+        "HelloLambdaPermissionS3SampleBucketS3"
+      ]
+    },
+    "HelloLambdaPermissionS3SampleBucketS3": {
+      "Type": "AWS::Lambda::Permission",
+      "Properties": {
+        "FunctionName": {
+          "Ref": "HelloLambdaFunctionAliasLive"
+        },
+        "Action": "lambda:InvokeFunction",
+        "Principal": "s3.amazonaws.com",
+        "SourceArn": {
+          "Fn::Join": [
+            "",
+            [
+              "arn:aws:s3:::s3SampleBucket"
+            ]
+          ]
+        }
+      }
+    },
+    "HelloEventSourceMappingDynamodbStreamsTestTable": {
+      "Type": "AWS::Lambda::EventSourceMapping",
+      "DependsOn": "IamRoleLambdaExecution",
+      "Properties": {
+        "BatchSize": 10,
+        "EventSourceArn": {
+          "Fn::GetAtt": [
+            "StreamsTestTable",
+            "StreamArn"
+          ]
+        },
+        "FunctionName": {
+          "Ref": "HelloLambdaFunctionAliasLive"
+        },
+        "StartingPosition": "TRIM_HORIZON",
+        "Enabled": "True"
       }
     },
     "HelloFooAlarm": {
@@ -301,6 +466,31 @@
         ],
         "TreatMissingData": "missing",
         "Statistic": "Minimum"
+      }
+    },
+    "StreamsTestTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": "StreamsTestTable",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "id",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "id",
+            "KeyType": "HASH"
+          }
+        ],
+        "ProvisionedThroughput": {
+          "ReadCapacityUnits": 1,
+          "WriteCapacityUnits": 1
+        },
+        "StreamSpecification": {
+          "StreamViewType": "NEW_AND_OLD_IMAGES"
+        }
       }
     },
     "CanarydeploymentstestdevDeploymentApplication": {
@@ -331,7 +521,8 @@
               }
             }
           ]
-        }
+        },
+        "PermissionsBoundary": "someExistingCodeDeployRolePermissionsBoundary"
       }
     },
     "HelloLambdaFunctionDeploymentGroup": {
@@ -432,6 +623,21 @@
       "Description": "Current Lambda function version",
       "Value": {
         "Ref": "PostHookLambdaVersiondh0VUUAh9BrmvORqx3vDEIcHxolKWKCO1YL45mVTbg"
+      }
+    },
+    "ServiceEndpoint": {
+      "Description": "URL of the service endpoint",
+      "Value": {
+        "Fn::Join": [
+          "",
+          [
+            "https://",
+            {
+              "Ref": "ApiGatewayRestApi"
+            },
+            ".execute-api.us-east-1.amazonaws.com/dev"
+          ]
+        ]
       }
     }
   }

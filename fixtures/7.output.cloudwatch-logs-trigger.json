@@ -101,6 +101,17 @@
                       "Fn::Sub": "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/canary-deployments-test-dev-postHook:*:*"
                     }
                   ]
+                },
+                {
+                  "Action": [
+                    "codedeploy:PutLifecycleEventHookExecutionStatus"
+                  ],
+                  "Effect": "Allow",
+                  "Resource": [
+                    {
+                      "Fn::Sub": "arn:${AWS::Partition}:codedeploy:${AWS::Region}:${AWS::AccountId}:deploymentgroup:${CanarydeploymentstestdevDeploymentApplication}/${HelloLambdaFunctionDeploymentGroup}"
+                    }
+                  ]
                 }
               ]
             }
@@ -295,8 +306,8 @@
       "Type": "AWS::IAM::Role",
       "Properties": {
         "ManagedPolicyArns": [
-          "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForLambda",
-          "arn:aws:iam::aws:policy/AWSLambdaFullAccess"
+          "arn:aws:iam::aws:policy/service-role/AWSCodeDeployRoleForLambdaLimited",
+          "arn:aws:iam::aws:policy/AWSLambda_FullAccess"
         ],
         "AssumeRolePolicyDocument": {
           "Version": "2012-10-17",

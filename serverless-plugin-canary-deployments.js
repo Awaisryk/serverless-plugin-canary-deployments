@@ -1,7 +1,15 @@
 const _ = require('lodash/fp')
 const flattenObject = require('flat')
 const CfGenerators = require('./lib/CfTemplateGenerators')
+const {
+  customPropertiesSchema,
+  functionPropertiesSchema
+} = require('./configSchemas')
 
+const slsHasConfigSchema = sls =>
+  sls.configSchemaHandler &&
+  sls.configSchemaHandler.defineCustomProperties &&
+  sls.configSchemaHandler.defineFunctionProperties
 class ServerlessCanaryDeployments {
   constructor (serverless, options) {
     this.serverless = serverless
@@ -12,6 +20,7 @@ class ServerlessCanaryDeployments {
     this.hooks = {
       'before:package:finalize': this.addCanaryDeploymentResources.bind(this)
     }
+    this.addConfigSchema()
   }
 
   get codeDeployAppName () {
@@ -37,18 +46,41 @@ class ServerlessCanaryDeployments {
     return this.awsProvider.getStage()
   }
 
+  addConfigSchema () {
+    if (slsHasConfigSchema(this.serverless)) {
+      this.serverless.configSchemaHandler.defineCustomProperties(customPropertiesSchema)
+      this.serverless.configSchemaHandler.defineFunctionProperties('aws', functionPropertiesSchema)
+    }
+  }
+
   addCanaryDeploymentResources () {
     if (this.shouldDeployDeployGradually()) {
       const codeDeployApp = this.buildCodeDeployApp()
-      const codeDeployRole = this.buildCodeDeployRole()
       const functionsResources = this.buildFunctionsResources()
+      const codeDeployRole = this.buildCodeDeployRole(this.areTriggerConfigurationsSet(functionsResources))
+      const executionRole = this.buildExecutionRole()
       Object.assign(
         this.compiledTpl.Resources,
         codeDeployApp,
         codeDeployRole,
+        executionRole,
         ...functionsResources
       )
     }
+  }
+
+  areTriggerConfigurationsSet (functionsResources) {
+    // Checking if the template has trigger configurations.
+    for (var resource of functionsResources) {
+      for (var key of Object.keys(resource)) {
+        if (resource[key].Type === 'AWS::CodeDeploy::DeploymentGroup') {
+          if (resource[key].Properties.TriggerConfigurations) {
+            return true
+          }
+        }
+      }
+    }
+    return false
   }
 
   shouldDeployDeployGradually () {
@@ -58,6 +90,31 @@ class ServerlessCanaryDeployments {
   currentStageEnabled () {
     const enabledStages = _.getOr([], 'stages', this.globalSettings)
     return _.isEmpty(enabledStages) || _.includes(this.currentStage, enabledStages)
+  }
+
+  buildExecutionRole () {
+    const logicalName = this.naming.getRoleLogicalId()
+
+    const inputRole = this.compiledTpl.Resources[logicalName]
+    if (!inputRole) {
+      return
+    }
+    const hasHook = _.pipe(
+      this.getDeploymentSettingsFor.bind(this),
+      settings => settings.preTrafficHook || settings.postTrafficHook
+    )
+    const getDeploymentGroup = _.pipe(
+      this.getFunctionName.bind(this),
+      this.getFunctionDeploymentGroupId.bind(this)
+    )
+    const deploymentGroups = _.pipe(
+      _.filter(hasHook),
+      _.map(getDeploymentGroup)
+    )(this.withDeploymentPreferencesFns)
+
+    const outputRole = CfGenerators.iam.buildExecutionRoleWithCodeDeploy(inputRole, this.codeDeployAppName, deploymentGroups)
+
+    return { [logicalName]: outputRole }
   }
 
   buildFunctionsResources () {
@@ -86,15 +143,15 @@ class ServerlessCanaryDeployments {
     return { [logicalName]: template }
   }
 
-  buildCodeDeployRole () {
+  buildCodeDeployRole (areTriggerConfigurationsSet) {
     if (this.globalSettings.codeDeployRole) return {}
     const logicalName = 'CodeDeployServiceRole'
-    const template = CfGenerators.iam.buildCodeDeployRole()
+    const template = CfGenerators.iam.buildCodeDeployRole(this.globalSettings.codeDeployRolePermissionsBoundary, areTriggerConfigurationsSet)
     return { [logicalName]: template }
   }
 
   buildFunctionDeploymentGroup ({ deploymentSettings, functionName }) {
-    const logicalName = `${functionName}DeploymentGroup`
+    const logicalName = this.getFunctionDeploymentGroupId(functionName)
     const params = {
       codeDeployAppName: this.codeDeployAppName,
       codeDeployRoleArn: deploymentSettings.codeDeployRole,
@@ -123,6 +180,10 @@ class ServerlessCanaryDeployments {
       trafficShiftingSettings
     })
     return { [logicalName]: template }
+  }
+
+  getFunctionDeploymentGroupId (functionLogicalId) {
+    return `${functionLogicalId}DeploymentGroup`
   }
 
   getFunctionName (slsFunctionName) {
@@ -348,8 +409,8 @@ class ServerlessCanaryDeployments {
     return _.head(_.keys(resource))
   }
 
-  getDeploymentSettingsFor (serverlessFunction) {
-    const fnDeploymentSetting = this.service.getFunction(serverlessFunction).deploymentSettings
+  getDeploymentSettingsFor (slsFunctionName) {
+    const fnDeploymentSetting = this.service.getFunction(slsFunctionName).deploymentSettings
     return Object.assign({}, this.globalSettings, fnDeploymentSetting)
   }
 }
